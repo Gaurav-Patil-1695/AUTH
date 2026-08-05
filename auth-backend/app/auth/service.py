@@ -1,18 +1,19 @@
 import hashlib
-import secrets
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-from fastapi import Response
-from jose import JWTError, jwt
-from sqlalchemy.ext.asyncio import AsyncSession
+import jwt
+from fastapi import HTTPException, Request, Response
+from fastapi.security import HTTPAuthorizationCredentials
 
 from app.auth.schemas import (
     ForgotPasswordRequest,
     ForgotPasswordResponse,
     LoginRequest,
     LoginResponse,
+    LogoutRequest,
     LogoutResponse,
     MeResponse,
     RefreshResponse,
@@ -21,278 +22,472 @@ from app.auth.schemas import (
     ResetPasswordRequest,
     ResetPasswordResponse,
 )
-from app.config import settings
-from app.models.user import User
-from app.models.refresh_token import RefreshToken
-from app.models.password_reset import PasswordReset
-from app.auth.repository import AuthRepository
+from app.db import get_connection
+
+SECRET_KEY: str = os.environ.get("JWT_SECRET", "change-me")
+ALGORITHM: str = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+REFRESH_TOKEN_REMEMBER_DAYS: int = int(os.environ.get("REFRESH_TOKEN_REMEMBER_DAYS", "30"))
+BCRYPT_ROUNDS: int = int(os.environ.get("BCRYPT_ROUNDS", "12"))
+COOKIE_NAME: str = "refresh_token"
 
 
-COOKIE_NAME = "refresh_token"
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
-def _hash_token(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
+def _generate_access_token(user_id: int, email: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def _hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS)).decode()
-
-
-def _verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
-
-
-def _create_access_token(user_id: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": str(user_id), "exp": expire, "iat": datetime.now(timezone.utc)}
-    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
-
-
-def _create_refresh_token() -> str:
-    return secrets.token_urlsafe(64)
+def _generate_refresh_token() -> str:
+    return hashlib.sha256(os.urandom(64)).hexdigest()
 
 
 def _set_refresh_cookie(response: Response, token: str, remember_me: bool) -> None:
-    max_age = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400 if remember_me else None
+    max_age = (
+        REFRESH_TOKEN_REMEMBER_DAYS * 86400 if remember_me else REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    )
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         httponly=True,
         samesite="lax",
-        secure=settings.COOKIE_SECURE,
+        secure=os.environ.get("COOKIE_SECURE", "true").lower() == "true",
         max_age=max_age,
         path="/",
     )
 
 
 def _clear_refresh_cookie(response: Response) -> None:
-    response.delete_cookie(key=COOKIE_NAME, httponly=True, samesite="lax", path="/")
+    response.delete_cookie(key=COOKIE_NAME, path="/")
 
 
 class AuthService:
-    def __init__(self, repo: AuthRepository) -> None:
-        self._repo = repo
-
     async def register(self, body: RegisterRequest) -> RegisterResponse:
-        from fastapi import HTTPException, status
+        async with get_connection() as conn:
+            existing = await conn.fetchrow(
+                "SELECT id FROM users WHERE email = $1", body.email
+            )
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": {
+                            "code": "EMAIL_TAKEN",
+                            "message": "An account with this email already exists.",
+                            "details": {},
+                        }
+                    },
+                )
 
-        existing = await self._repo.get_user_by_email(body.email)
-        if existing is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "error": {
-                        "code": "EMAIL_TAKEN",
-                        "message": "An account with this email already exists.",
-                        "details": {},
-                    }
-                },
+            password_hash = bcrypt.hashpw(
+                body.password.encode(), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+            ).decode()
+
+            row = await conn.fetchrow(
+                """
+                INSERT INTO users (full_name, email, password_hash, is_active)
+                VALUES ($1, $2, $3, TRUE)
+                RETURNING id, full_name, email, created_at
+                """,
+                body.full_name,
+                body.email,
+                password_hash,
             )
 
-        password_hash = _hash_password(body.password)
-        user = await self._repo.create_user(
-            full_name=body.full_name,
-            email=body.email,
-            password_hash=password_hash,
-        )
         return RegisterResponse(
-            id=str(user.id),
-            fullName=user.full_name,
-            email=user.email,
-            createdAt=user.created_at.isoformat(),
+            id=row["id"],
+            fullName=row["full_name"],
+            email=row["email"],
+            createdAt=row["created_at"].isoformat(),
         )
 
     async def login(self, body: LoginRequest, response: Response) -> LoginResponse:
-        from fastapi import HTTPException, status
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, full_name, email, password_hash, is_active FROM users WHERE email = $1",
+                body.email,
+            )
 
-        _INVALID = "Invalid email or password."
-
-        user = await self._repo.get_user_by_email(body.email)
-        if user is None or not _verify_password(body.password, user.password_hash):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
+            invalid_exc = HTTPException(
+                status_code=401,
                 detail={
                     "error": {
                         "code": "INVALID_CREDENTIALS",
-                        "message": _INVALID,
+                        "message": "Invalid email or password.",
                         "details": {},
                     }
                 },
             )
 
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": {
-                        "code": "ACCOUNT_INACTIVE",
-                        "message": _INVALID,
-                        "details": {},
-                    }
-                },
+            if not row:
+                raise invalid_exc
+
+            if not bcrypt.checkpw(body.password.encode(), row["password_hash"].encode()):
+                raise invalid_exc
+
+            if not row["is_active"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": {
+                            "code": "ACCOUNT_INACTIVE",
+                            "message": "Your account is inactive.",
+                            "details": {},
+                        }
+                    },
+                )
+
+            access_token = _generate_access_token(row["id"], row["email"])
+            raw_refresh = _generate_refresh_token()
+            token_hash = _hash_token(raw_refresh)
+            remember_me: bool = body.rememberMe if body.rememberMe is not None else False
+            expire_days = REFRESH_TOKEN_REMEMBER_DAYS if remember_me else REFRESH_TOKEN_EXPIRE_DAYS
+            expires_at = datetime.now(timezone.utc) + timedelta(days=expire_days)
+
+            await conn.execute(
+                """
+                INSERT INTO refresh_tokens (user_id, token_hash, expires_at, remember_me)
+                VALUES ($1, $2, $3, $4)
+                """,
+                row["id"],
+                token_hash,
+                expires_at,
+                remember_me,
             )
-
-        access_token = _create_access_token(user.id)
-        raw_refresh = _create_refresh_token()
-        remember_me: bool = body.rememberMe if body.rememberMe is not None else False
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-        )
-
-        await self._repo.create_refresh_token(
-            user_id=user.id,
-            token_hash=_hash_token(raw_refresh),
-            expires_at=expires_at,
-            remember_me=remember_me,
-        )
 
         _set_refresh_cookie(response, raw_refresh, remember_me)
 
         return LoginResponse(
             accessToken=access_token,
             tokenType="bearer",
-            user=MeResponse(
-                id=str(user.id),
-                fullName=user.full_name,
-                email=user.email,
-                createdAt=user.created_at.isoformat(),
-            ),
+            user={
+                "id": row["id"],
+                "fullName": row["full_name"],
+                "email": row["email"],
+            },
         )
 
-    async def forgot_password(self, body: ForgotPasswordRequest) -> ForgotPasswordResponse:
-        _GENERIC = "If that email is registered you will receive a reset link shortly."
+    async def forgotPassword(self, body: ForgotPasswordRequest) -> ForgotPasswordResponse:
+        generic = ForgotPasswordResponse(
+            message="If an account with that email exists, a password reset link has been sent."
+        )
 
-        user = await self._repo.get_user_by_email(body.email)
-        if user is not None and user.is_active:
-            raw_token = secrets.token_urlsafe(32)
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM users WHERE email = $1 AND is_active = TRUE", body.email
+            )
+            if not row:
+                return generic
+
+            raw_token = _generate_refresh_token()
             token_hash = _hash_token(raw_token)
-            expires_at = datetime.now(timezone.utc) + timedelta(
-                minutes=settings.PASSWORD_RESET_EXPIRE_MINUTES
+            expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+
+            await conn.execute(
+                """
+                INSERT INTO password_resets (user_id, token_hash, expires_at)
+                VALUES ($1, $2, $3)
+                """,
+                row["id"],
+                token_hash,
+                expires_at,
             )
-            await self._repo.create_password_reset(
-                user_id=user.id,
-                token_hash=token_hash,
-                expires_at=expires_at,
-            )
-            # Email sending is handled by the infrastructure layer (out of scope here)
 
-        return ForgotPasswordResponse(message=_GENERIC)
+        # In production, send email here with raw_token.
+        return generic
 
-    async def reset_password(self, body: ResetPasswordRequest) -> ResetPasswordResponse:
-        from fastapi import HTTPException, status
-
+    async def resetPassword(self, body: ResetPasswordRequest) -> ResetPasswordResponse:
         token_hash = _hash_token(body.token)
-        reset_record = await self._repo.get_valid_password_reset(token_hash)
-        if reset_record is None:
+
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, user_id, expires_at, used_at
+                FROM password_resets
+                WHERE token_hash = $1
+                """,
+                token_hash,
+            )
+
+            if not row:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "code": "INVALID_RESET_TOKEN",
+                            "message": "This password reset link is invalid or has expired.",
+                            "details": {},
+                        }
+                    },
+                )
+
+            if row["used_at"] is not None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "code": "RESET_TOKEN_USED",
+                            "message": "This password reset link is invalid or has expired.",
+                            "details": {},
+                        }
+                    },
+                )
+
+            if row["expires_at"].replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "code": "RESET_TOKEN_EXPIRED",
+                            "message": "This password reset link is invalid or has expired.",
+                            "details": {},
+                        }
+                    },
+                )
+
+            new_hash = bcrypt.hashpw(
+                body.password.encode(), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+            ).decode()
+
+            await conn.execute(
+                "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2",
+                new_hash,
+                row["user_id"],
+            )
+
+            await conn.execute(
+                "UPDATE password_resets SET used_at = NOW() WHERE id = $1",
+                row["id"],
+            )
+
+            await conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+                row["user_id"],
+            )
+
+        return ResetPasswordResponse(message="Your password has been reset successfully.")
+
+    async def me(
+        self, credentials: Optional[HTTPAuthorizationCredentials]
+    ) -> MeResponse:
+        if not credentials:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=401,
                 detail={
                     "error": {
-                        "code": "INVALID_OR_EXPIRED_TOKEN",
-                        "message": "This reset link is invalid or has expired.",
+                        "code": "MISSING_TOKEN",
+                        "message": "Authentication required.",
                         "details": {},
                     }
                 },
             )
 
-        new_hash = _hash_password(body.password)
-        await self._repo.update_user_password(reset_record.user_id, new_hash)
-        await self._repo.mark_password_reset_used(reset_record.id)
-        await self._repo.revoke_all_refresh_tokens(reset_record.user_id)
+        try:
+            payload = jwt.decode(
+                credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM]
+            )
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "code": "TOKEN_EXPIRED",
+                        "message": "Your session has expired. Please log in again.",
+                        "details": {},
+                    }
+                },
+            )
+        except jwt.PyJWTError:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "code": "INVALID_TOKEN",
+                        "message": "Authentication required.",
+                        "details": {},
+                    }
+                },
+            )
 
-        return ResetPasswordResponse(message="Your password has been reset successfully.")
+        user_id = int(payload["sub"])
 
-    async def me(self, current_user: User) -> MeResponse:
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, full_name, email, is_active, created_at FROM users WHERE id = $1",
+                user_id,
+            )
+
+        if not row or not row["is_active"]:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "code": "USER_NOT_FOUND",
+                        "message": "Authentication required.",
+                        "details": {},
+                    }
+                },
+            )
+
         return MeResponse(
-            id=str(current_user.id),
-            fullName=current_user.full_name,
-            email=current_user.email,
-            createdAt=current_user.created_at.isoformat(),
+            id=row["id"],
+            fullName=row["full_name"],
+            email=row["email"],
+            createdAt=row["created_at"].isoformat(),
         )
 
     async def logout(
         self,
-        current_user: User,
-        refresh_token: Optional[str],
+        request: Request,
         response: Response,
+        credentials: Optional[HTTPAuthorizationCredentials],
     ) -> LogoutResponse:
-        if refresh_token is not None:
-            token_hash = _hash_token(refresh_token)
-            await self._repo.revoke_refresh_token_by_hash(token_hash)
+        raw_refresh: Optional[str] = request.cookies.get(COOKIE_NAME)
+
+        if raw_refresh:
+            token_hash = _hash_token(raw_refresh)
+            async with get_connection() as conn:
+                await conn.execute(
+                    """
+                    UPDATE refresh_tokens
+                    SET revoked_at = NOW()
+                    WHERE token_hash = $1 AND revoked_at IS NULL
+                    """,
+                    token_hash,
+                )
 
         _clear_refresh_cookie(response)
-
         return LogoutResponse(message="Logged out successfully.")
 
-    async def refresh(
-        self,
-        refresh_token: Optional[str],
-        response: Response,
-    ) -> RefreshResponse:
-        from fastapi import HTTPException, status
+    async def refresh(self, request: Request, response: Response) -> RefreshResponse:
+        raw_refresh: Optional[str] = request.cookies.get(COOKIE_NAME)
 
-        _INVALID = "Invalid or expired refresh token."
-
-        if refresh_token is None:
+        if not raw_refresh:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
+                status_code=401,
                 detail={
                     "error": {
                         "code": "MISSING_REFRESH_TOKEN",
-                        "message": _INVALID,
+                        "message": "Your session has expired. Please log in again.",
                         "details": {},
                     }
                 },
             )
 
-        token_hash = _hash_token(refresh_token)
-        stored = await self._repo.get_valid_refresh_token(token_hash)
+        token_hash = _hash_token(raw_refresh)
 
-        if stored is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": {
-                        "code": "INVALID_REFRESH_TOKEN",
-                        "message": _INVALID,
-                        "details": {},
-                    }
-                },
+        async with get_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked_at, rt.remember_me,
+                       u.email, u.full_name, u.is_active
+                FROM refresh_tokens rt
+                JOIN users u ON u.id = rt.user_id
+                WHERE rt.token_hash = $1
+                """,
+                token_hash,
             )
 
-        # Rotate: revoke old, issue new
-        await self._repo.revoke_refresh_token_by_hash(token_hash)
+            if not row:
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "error": {
+                            "code": "INVALID_REFRESH_TOKEN",
+                            "message": "Your session has expired. Please log in again.",
+                            "details": {},
+                        }
+                    },
+                )
 
-        user = await self._repo.get_user_by_id(stored.user_id)
-        if user is None or not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={
-                    "error": {
-                        "code": "INVALID_REFRESH_TOKEN",
-                        "message": _INVALID,
-                        "details": {},
-                    }
-                },
+            if row["revoked_at"] is not None:
+                # Possible token reuse — revoke all tokens for this user.
+                await conn.execute(
+                    "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+                    row["user_id"],
+                )
+                _clear_refresh_cookie(response)
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "error": {
+                            "code": "REFRESH_TOKEN_REUSE",
+                            "message": "Your session has expired. Please log in again.",
+                            "details": {},
+                        }
+                    },
+                )
+
+            expires_at = row["expires_at"]
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at < datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=401,
+                    detail={
+                        "error": {
+                            "code": "REFRESH_TOKEN_EXPIRED",
+                            "message": "Your session has expired. Please log in again.",
+                            "details": {},
+                        }
+                    },
+                )
+
+            if not row["is_active"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": {
+                            "code": "ACCOUNT_INACTIVE",
+                            "message": "Your account is inactive.",
+                            "details": {},
+                        }
+                    },
+                )
+
+            # Revoke old refresh token.
+            await conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = NOW() WHERE id = $1",
+                row["id"],
             )
 
-        access_token = _create_access_token(user.id)
-        raw_refresh = _create_refresh_token()
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            days=settings.REFRESH_TOKEN_EXPIRE_DAYS
-        )
+            # Issue new refresh token (rotation).
+            new_raw_refresh = _generate_refresh_token()
+            new_token_hash = _hash_token(new_raw_refresh)
+            remember_me: bool = row["remember_me"]
+            expire_days = REFRESH_TOKEN_REMEMBER_DAYS if remember_me else REFRESH_TOKEN_EXPIRE_DAYS
+            new_expires_at = datetime.now(timezone.utc) + timedelta(days=expire_days)
 
-        await self._repo.create_refresh_token(
-            user_id=user.id,
-            token_hash=_hash_token(raw_refresh),
-            expires_at=expires_at,
-            remember_me=stored.remember_me,
-        )
+            await conn.execute(
+                """
+                INSERT INTO refresh_tokens (user_id, token_hash, expires_at, remember_me)
+                VALUES ($1, $2, $3, $4)
+                """,
+                row["user_id"],
+                new_token_hash,
+                new_expires_at,
+                remember_me,
+            )
 
-        _set_refresh_cookie(response, raw_refresh, stored.remember_me)
+        access_token = _generate_access_token(row["user_id"], row["email"])
+        _set_refresh_cookie(response, new_raw_refresh, remember_me)
 
         return RefreshResponse(
             accessToken=access_token,
             tokenType="bearer",
+            user={
+                "id": row["user_id"],
+                "fullName": row["full_name"],
+                "email": row["email"],
+            },
         )

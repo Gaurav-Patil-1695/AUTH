@@ -1,19 +1,18 @@
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
-    full_name: str = Field(..., alias="fullName")
+    fullName: str = Field(..., min_length=1)
     email: EmailStr
-    password: str
-    confirm_password: str = Field(..., alias="confirmPassword")
-
-    model_config = {"populate_by_name": True}
+    password: str = Field(..., min_length=8)
+    confirmPassword: str
+    acceptTerms: bool
 
 
 class RegisterResponse(BaseModel):
-    id: str
+    id: int
     fullName: str
     email: str
     createdAt: str
@@ -22,20 +21,13 @@ class RegisterResponse(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    rememberMe: Optional[bool] = None
-
-
-class MeResponse(BaseModel):
-    id: str
-    fullName: str
-    email: str
-    createdAt: str
+    rememberMe: Optional[bool] = False
 
 
 class LoginResponse(BaseModel):
     accessToken: str
     tokenType: str
-    user: MeResponse
+    user: Dict[str, Any]
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -48,14 +40,23 @@ class ForgotPasswordResponse(BaseModel):
 
 class ResetPasswordRequest(BaseModel):
     token: str
-    password: str
-    confirm_password: str = Field(..., alias="confirmPassword")
-
-    model_config = {"populate_by_name": True}
+    password: str = Field(..., min_length=8)
+    confirmPassword: str
 
 
 class ResetPasswordResponse(BaseModel):
     message: str
+
+
+class MeResponse(BaseModel):
+    id: int
+    fullName: str
+    email: str
+    createdAt: str
+
+
+class LogoutRequest(BaseModel):
+    pass
 
 
 class LogoutResponse(BaseModel):
@@ -65,13 +66,4 @@ class LogoutResponse(BaseModel):
 class RefreshResponse(BaseModel):
     accessToken: str
     tokenType: str
-
-
-class ErrorDetail(BaseModel):
-    code: str
-    message: str
-    details: dict
-
-
-class ErrorResponse(BaseModel):
-    error: ErrorDetail
+    user: Dict[str, Any]
