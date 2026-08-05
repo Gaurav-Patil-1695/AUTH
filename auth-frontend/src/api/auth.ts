@@ -1,22 +1,4 @@
-import axios from 'axios';
-
-const api = axios.create({
-  baseURL: '/api',
-  withCredentials: true,
-});
-
-export interface RegisterRequest {
-  fullName: string;
-  email: string;
-  password: string;
-  confirmPassword: string;
-}
-
-export interface RegisterResponse {
-  id: string;
-  fullName: string;
-  email: string;
-}
+const API_BASE = '/api';
 
 export interface LoginRequest {
   email: string;
@@ -26,20 +8,19 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   accessToken: string;
-  user: {
-    id: string;
-    fullName: string;
-    email: string;
-  };
+  user: UserDto;
 }
 
-export interface MeResponse {
-  id: string;
+export interface RegisterRequest {
   fullName: string;
   email: string;
-  isActive: boolean;
-  createdAt: string;
-  updatedAt: string;
+  password: string;
+  confirmPassword: string;
+}
+
+export interface RegisterResponse {
+  accessToken: string;
+  user: UserDto;
 }
 
 export interface ForgotPasswordRequest {
@@ -52,53 +33,80 @@ export interface ResetPasswordRequest {
   confirmPassword: string;
 }
 
+export interface UserDto {
+  id: string;
+  fullName: string;
+  email: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MeResponse {
+  user: UserDto;
+}
+
 export interface RefreshResponse {
   accessToken: string;
 }
 
-export async function register(data: RegisterRequest): Promise<RegisterResponse> {
-  const response = await api.post<RegisterResponse>('/auth/register', {
-    fullName: data.fullName,
-    email: data.email,
-    password: data.password,
-    confirmPassword: data.confirmPassword,
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  const response = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers,
+    credentials: 'include',
+    body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  return response.data;
+
+  if (!response.ok) {
+    let errorData: unknown;
+    try {
+      errorData = await response.json();
+    } catch {
+      errorData = { error: { code: 'UNKNOWN', message: response.statusText } };
+    }
+    throw errorData;
+  }
+
+  if (response.status === 204) {
+    return undefined as unknown as T;
+  }
+
+  return response.json() as Promise<T>;
 }
 
 export async function login(data: LoginRequest): Promise<LoginResponse> {
-  const response = await api.post<LoginResponse>('/auth/login', {
-    email: data.email,
-    password: data.password,
-    rememberMe: data.rememberMe ?? false,
-  });
-  return response.data;
+  return request<LoginResponse>('POST', '/auth/login', data);
 }
 
-export async function me(): Promise<MeResponse> {
-  const response = await api.get<MeResponse>('/auth/me');
-  return response.data;
-}
-
-export async function logout(): Promise<void> {
-  await api.post('/auth/logout');
-}
-
-export async function refresh(): Promise<RefreshResponse> {
-  const response = await api.post<RefreshResponse>('/auth/refresh');
-  return response.data;
+export async function register(data: RegisterRequest): Promise<RegisterResponse> {
+  return request<RegisterResponse>('POST', '/auth/register', data);
 }
 
 export async function forgotPassword(data: ForgotPasswordRequest): Promise<void> {
-  await api.post('/auth/forgot-password', { email: data.email });
+  return request<void>('POST', '/auth/forgot-password', data);
 }
 
 export async function resetPassword(data: ResetPasswordRequest): Promise<void> {
-  await api.post('/auth/reset-password', {
-    token: data.token,
-    password: data.password,
-    confirmPassword: data.confirmPassword,
-  });
+  return request<void>('POST', '/auth/reset-password', data);
 }
 
-export default api;
+export async function me(): Promise<MeResponse> {
+  return request<MeResponse>('GET', '/auth/me');
+}
+
+export async function logout(): Promise<void> {
+  return request<void>('POST', '/auth/logout');
+}
+
+export async function refresh(): Promise<RefreshResponse> {
+  return request<RefreshResponse>('POST', '/auth/refresh');
+}
