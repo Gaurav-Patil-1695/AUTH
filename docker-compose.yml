@@ -1,0 +1,19 @@
+services:
+  backend:
+    build: auth-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    command: ["npm", "run", "dev"]
+    ports:
+      - "5173:5173"
+  db:
+    image: postgres:16
+    ports:
+      - "5432:5432"
