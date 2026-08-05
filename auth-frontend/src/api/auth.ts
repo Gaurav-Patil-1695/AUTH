@@ -1,45 +1,36 @@
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL ?? 'http://localhost:8000';
+import axios from 'axios';
 
-export interface LoginRequest {
-  email: string;
-  password: string;
-  rememberMe: boolean;
-}
-
-export interface LoginResponse {
-  accessToken: string;
-  tokenType: string;
-}
+const api = axios.create({
+  baseURL: '/api',
+  withCredentials: true,
+});
 
 export interface RegisterRequest {
   fullName: string;
   email: string;
   password: string;
   confirmPassword: string;
-  acceptTerms: boolean;
 }
 
 export interface RegisterResponse {
-  accessToken: string;
-  tokenType: string;
-}
-
-export interface ForgotPasswordRequest {
+  id: string;
+  fullName: string;
   email: string;
 }
 
-export interface ForgotPasswordResponse {
-  message: string;
-}
-
-export interface ResetPasswordRequest {
-  token: string;
+export interface LoginRequest {
+  email: string;
   password: string;
-  confirmPassword: string;
+  rememberMe?: boolean;
 }
 
-export interface ResetPasswordResponse {
-  message: string;
+export interface LoginResponse {
+  accessToken: string;
+  user: {
+    id: string;
+    fullName: string;
+    email: string;
+  };
 }
 
 export interface MeResponse {
@@ -51,100 +42,63 @@ export interface MeResponse {
   updatedAt: string;
 }
 
-export interface LogoutResponse {
-  message: string;
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+export interface ResetPasswordRequest {
+  token: string;
+  password: string;
+  confirmPassword: string;
 }
 
 export interface RefreshResponse {
   accessToken: string;
-  tokenType: string;
 }
 
-async function request<T>(
-  method: string,
-  path: string,
-  body?: unknown,
-  accessToken?: string,
-): Promise<T> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-
-  if (accessToken) {
-    headers['Authorization'] = `Bearer ${accessToken}`;
-  }
-
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method,
-    headers,
-    credentials: 'include',
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+export async function register(data: RegisterRequest): Promise<RegisterResponse> {
+  const response = await api.post<RegisterResponse>('/auth/register', {
+    fullName: data.fullName,
+    email: data.email,
+    password: data.password,
+    confirmPassword: data.confirmPassword,
   });
-
-  if (!response.ok) {
-    let message = 'Invalid email or password.';
-    try {
-      const data = await response.json();
-      if (data?.error?.message) {
-        message = data.error.message;
-      }
-    } catch {
-      // ignore parse errors
-    }
-    throw new Error(message);
-  }
-
-  const text = await response.text();
-  if (!text) {
-    return undefined as unknown as T;
-  }
-  return JSON.parse(text) as T;
+  return response.data;
 }
 
-export async function login(payload: LoginRequest): Promise<LoginResponse> {
-  return request<LoginResponse>('POST', '/auth/login', {
-    email: payload.email,
-    password: payload.password,
-    remember_me: payload.rememberMe,
+export async function login(data: LoginRequest): Promise<LoginResponse> {
+  const response = await api.post<LoginResponse>('/auth/login', {
+    email: data.email,
+    password: data.password,
+    rememberMe: data.rememberMe ?? false,
   });
+  return response.data;
 }
 
-export async function register(payload: RegisterRequest): Promise<RegisterResponse> {
-  return request<RegisterResponse>('POST', '/auth/register', {
-    full_name: payload.fullName,
-    email: payload.email,
-    password: payload.password,
-    confirm_password: payload.confirmPassword,
-    accept_terms: payload.acceptTerms,
-  });
+export async function me(): Promise<MeResponse> {
+  const response = await api.get<MeResponse>('/auth/me');
+  return response.data;
 }
 
-export async function forgotPassword(
-  payload: ForgotPasswordRequest,
-): Promise<ForgotPasswordResponse> {
-  return request<ForgotPasswordResponse>('POST', '/auth/forgot-password', {
-    email: payload.email,
-  });
-}
-
-export async function resetPassword(
-  payload: ResetPasswordRequest,
-): Promise<ResetPasswordResponse> {
-  return request<ResetPasswordResponse>('POST', '/auth/reset-password', {
-    token: payload.token,
-    password: payload.password,
-    confirm_password: payload.confirmPassword,
-  });
-}
-
-export async function me(accessToken: string): Promise<MeResponse> {
-  return request<MeResponse>('GET', '/auth/me', undefined, accessToken);
-}
-
-export async function logout(accessToken: string): Promise<LogoutResponse> {
-  return request<LogoutResponse>('POST', '/auth/logout', undefined, accessToken);
+export async function logout(): Promise<void> {
+  await api.post('/auth/logout');
 }
 
 export async function refresh(): Promise<RefreshResponse> {
-  return request<RefreshResponse>('POST', '/auth/refresh');
+  const response = await api.post<RefreshResponse>('/auth/refresh');
+  return response.data;
 }
+
+export async function forgotPassword(data: ForgotPasswordRequest): Promise<void> {
+  await api.post('/auth/forgot-password', { email: data.email });
+}
+
+export async function resetPassword(data: ResetPasswordRequest): Promise<void> {
+  await api.post('/auth/reset-password', {
+    token: data.token,
+    password: data.password,
+    confirmPassword: data.confirmPassword,
+  });
+}
+
+export default api;
