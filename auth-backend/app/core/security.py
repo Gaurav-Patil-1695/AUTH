@@ -17,7 +17,9 @@ from app.config.settings import settings
 def hash_password(plain_password: str) -> str:
     """Hash a plaintext password using bcrypt."""
     password_bytes = plain_password.encode("utf-8")
-    hashed = bcrypt.hashpw(password_bytes, bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS))
+    hashed = bcrypt.hashpw(
+        password_bytes, bcrypt.gensalt(rounds=settings.BCRYPT_ROUNDS)
+    )
     return hashed.decode("utf-8")
 
 
@@ -123,7 +125,9 @@ def create_refresh_token(
     """
     if expires_delta is None:
         if remember_me:
-            expires_delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER)
+            expires_delta = timedelta(
+                days=settings.REFRESH_TOKEN_EXPIRE_DAYS_REMEMBER
+            )
         else:
             expires_delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
 

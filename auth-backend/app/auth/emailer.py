@@ -25,6 +25,7 @@ def _build_plain_text_body(reset_link: str) -> str:
 
 
 def _build_html_body(reset_link: str) -> str:
+    expire = settings.RESET_TOKEN_EXPIRE_MINUTES
     return (
         "<!DOCTYPE html>"
         "<html lang=\"en\">"
@@ -34,14 +35,16 @@ def _build_html_body(reset_link: str) -> str:
         "<p>"
         f"<a href=\"{reset_link}\" style=\"color:#4f46e5;\">Reset your password</a>"
         "</p>"
-        f"<p>This link will expire in {settings.RESET_TOKEN_EXPIRE_MINUTES} minutes.</p>"
-        "<p>If you did not request a password reset, you can safely ignore this email.</p>"
+        f"<p>This link will expire in {expire} minutes.</p>"
+        "<p>If you did not request a password reset, you can safely ignore this"
+        " email.</p>"
         "</body></html>"
     )
 
 
 def send_reset_email(to_email: str, raw_token: str) -> None:
-    """Send a password-reset email to *to_email* containing a link built from *raw_token*.
+    """Send a password-reset email to *to_email* containing a link built from
+    *raw_token*.
 
     Uses SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM, and
     APP_BASE_URL from the application settings.

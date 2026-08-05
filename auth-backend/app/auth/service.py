@@ -13,7 +13,6 @@ from app.auth.schemas import (
     ForgotPasswordResponse,
     LoginRequest,
     LoginResponse,
-    LogoutRequest,
     LogoutResponse,
     MeResponse,
     RefreshResponse,
@@ -26,11 +25,19 @@ from app.db import get_connection
 
 SECRET_KEY: str = os.environ.get("JWT_SECRET", "change-me")
 ALGORITHM: str = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+ACCESS_TOKEN_EXPIRE_MINUTES: int = int(
+    os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "15")
+)
 REFRESH_TOKEN_EXPIRE_DAYS: int = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
-REFRESH_TOKEN_REMEMBER_DAYS: int = int(os.environ.get("REFRESH_TOKEN_REMEMBER_DAYS", "30"))
+REFRESH_TOKEN_REMEMBER_DAYS: int = int(
+    os.environ.get("REFRESH_TOKEN_REMEMBER_DAYS", "30")
+)
 BCRYPT_ROUNDS: int = int(os.environ.get("BCRYPT_ROUNDS", "12"))
 COOKIE_NAME: str = "refresh_token"
+
+_MSG_INVALID_RESET_TOKEN: str = (
+    "This password reset link is invalid or has expired."
+)
 
 
 def _hash_token(token: str) -> str:
@@ -38,7 +45,9 @@ def _hash_token(token: str) -> str:
 
 
 def _generate_access_token(user_id: int, email: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(timezone.utc) + timedelta(
+        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+    )
     payload = {
         "sub": str(user_id),
         "email": email,
@@ -52,9 +61,13 @@ def _generate_refresh_token() -> str:
     return hashlib.sha256(os.urandom(64)).hexdigest()
 
 
-def _set_refresh_cookie(response: Response, token: str, remember_me: bool) -> None:
+def _set_refresh_cookie(
+    response: Response, token: str, remember_me: bool
+) -> None:
     max_age = (
-        REFRESH_TOKEN_REMEMBER_DAYS * 86400 if remember_me else REFRESH_TOKEN_EXPIRE_DAYS * 86400
+        REFRESH_TOKEN_REMEMBER_DAYS * 86400
+        if remember_me
+        else REFRESH_TOKEN_EXPIRE_DAYS * 86400
     )
     response.set_cookie(
         key=COOKIE_NAME,
@@ -114,7 +127,8 @@ class AuthService:
     async def login(self, body: LoginRequest, response: Response) -> LoginResponse:
         async with get_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT id, full_name, email, password_hash, is_active FROM users WHERE email = $1",
+                "SELECT id, full_name, email, password_hash, is_active"
+                " FROM users WHERE email = $1",
                 body.email,
             )
 
@@ -132,7 +146,9 @@ class AuthService:
             if not row:
                 raise invalid_exc
 
-            if not bcrypt.checkpw(body.password.encode(), row["password_hash"].encode()):
+            if not bcrypt.checkpw(
+                body.password.encode(), row["password_hash"].encode()
+            ):
                 raise invalid_exc
 
             if not row["is_active"]:
@@ -150,13 +166,20 @@ class AuthService:
             access_token = _generate_access_token(row["id"], row["email"])
             raw_refresh = _generate_refresh_token()
             token_hash = _hash_token(raw_refresh)
-            remember_me: bool = body.rememberMe if body.rememberMe is not None else False
-            expire_days = REFRESH_TOKEN_REMEMBER_DAYS if remember_me else REFRESH_TOKEN_EXPIRE_DAYS
+            remember_me: bool = (
+                body.remember_me if body.remember_me is not None else False
+            )
+            expire_days = (
+                REFRESH_TOKEN_REMEMBER_DAYS
+                if remember_me
+                else REFRESH_TOKEN_EXPIRE_DAYS
+            )
             expires_at = datetime.now(timezone.utc) + timedelta(days=expire_days)
 
             await conn.execute(
                 """
-                INSERT INTO refresh_tokens (user_id, token_hash, expires_at, remember_me)
+                INSERT INTO refresh_tokens
+                (user_id, token_hash, expires_at, remember_me)
                 VALUES ($1, $2, $3, $4)
                 """,
                 row["id"],
@@ -177,14 +200,20 @@ class AuthService:
             },
         )
 
-    async def forgotPassword(self, body: ForgotPasswordRequest) -> ForgotPasswordResponse:
+    async def forgot_password(
+        self, body: ForgotPasswordRequest
+    ) -> ForgotPasswordResponse:
         generic = ForgotPasswordResponse(
-            message="If an account with that email exists, a password reset link has been sent."
+            message=(
+                "If an account with that email exists, a password reset link"
+                " has been sent."
+            )
         )
 
         async with get_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT id FROM users WHERE email = $1 AND is_active = TRUE", body.email
+                "SELECT id FROM users WHERE email = $1 AND is_active = TRUE",
+                body.email,
             )
             if not row:
                 return generic
@@ -206,7 +235,15 @@ class AuthService:
         # In production, send email here with raw_token.
         return generic
 
-    async def resetPassword(self, body: ResetPasswordRequest) -> ResetPasswordResponse:
+    # Keep old name as alias for compatibility with router calling forgotPassword
+    async def forgotPassword(
+        self, body: ForgotPasswordRequest
+    ) -> ForgotPasswordResponse:
+        return await self.forgot_password(body)
+
+    async def reset_password(
+        self, body: ResetPasswordRequest
+    ) -> ResetPasswordResponse:
         token_hash = _hash_token(body.token)
 
         async with get_connection() as conn:
@@ -225,7 +262,7 @@ class AuthService:
                     detail={
                         "error": {
                             "code": "INVALID_RESET_TOKEN",
-                            "message": "This password reset link is invalid or has expired.",
+                            "message": _MSG_INVALID_RESET_TOKEN,
                             "details": {},
                         }
                     },
@@ -237,19 +274,21 @@ class AuthService:
                     detail={
                         "error": {
                             "code": "RESET_TOKEN_USED",
-                            "message": "This password reset link is invalid or has expired.",
+                            "message": _MSG_INVALID_RESET_TOKEN,
                             "details": {},
                         }
                     },
                 )
 
-            if row["expires_at"].replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+            if row["expires_at"].replace(tzinfo=timezone.utc) < datetime.now(
+                timezone.utc
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail={
                         "error": {
                             "code": "RESET_TOKEN_EXPIRED",
-                            "message": "This password reset link is invalid or has expired.",
+                            "message": _MSG_INVALID_RESET_TOKEN,
                             "details": {},
                         }
                     },
@@ -260,7 +299,8 @@ class AuthService:
             ).decode()
 
             await conn.execute(
-                "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2",
+                "UPDATE users SET password_hash = $1, updated_at = NOW()"
+                " WHERE id = $2",
                 new_hash,
                 row["user_id"],
             )
@@ -271,14 +311,23 @@ class AuthService:
             )
 
             await conn.execute(
-                "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+                "UPDATE refresh_tokens SET revoked_at = NOW()"
+                " WHERE user_id = $1 AND revoked_at IS NULL",
                 row["user_id"],
             )
 
-        return ResetPasswordResponse(message="Your password has been reset successfully.")
+        return ResetPasswordResponse(
+            message="Your password has been reset successfully."
+        )
+
+    # Keep old name as alias for compatibility with router calling resetPassword
+    async def resetPassword(
+        self, body: ResetPasswordRequest
+    ) -> ResetPasswordResponse:
+        return await self.reset_password(body)
 
     async def me(
-        self, credentials: Optional[HTTPAuthorizationCredentials]
+        self, credentials: HTTPAuthorizationCredentials | None
     ) -> MeResponse:
         if not credentials:
             raise HTTPException(
@@ -319,11 +368,24 @@ class AuthService:
                 },
             )
 
-        user_id = int(payload["sub"])
+        user_id_raw = payload.get("sub")
+        if user_id_raw is None:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": {
+                        "code": "INVALID_TOKEN",
+                        "message": "Authentication required.",
+                        "details": {},
+                    }
+                },
+            )
+        user_id = int(user_id_raw)
 
         async with get_connection() as conn:
             row = await conn.fetchrow(
-                "SELECT id, full_name, email, is_active, created_at FROM users WHERE id = $1",
+                "SELECT id, full_name, email, is_active, created_at"
+                " FROM users WHERE id = $1",
                 user_id,
             )
 
@@ -350,9 +412,9 @@ class AuthService:
         self,
         request: Request,
         response: Response,
-        credentials: Optional[HTTPAuthorizationCredentials],
+        credentials: HTTPAuthorizationCredentials | None,
     ) -> LogoutResponse:
-        raw_refresh: Optional[str] = request.cookies.get(COOKIE_NAME)
+        raw_refresh: str | None = request.cookies.get(COOKIE_NAME)
 
         if raw_refresh:
             token_hash = _hash_token(raw_refresh)
@@ -370,7 +432,7 @@ class AuthService:
         return LogoutResponse(message="Logged out successfully.")
 
     async def refresh(self, request: Request, response: Response) -> RefreshResponse:
-        raw_refresh: Optional[str] = request.cookies.get(COOKIE_NAME)
+        raw_refresh: str | None = request.cookies.get(COOKIE_NAME)
 
         if not raw_refresh:
             raise HTTPException(
@@ -389,7 +451,8 @@ class AuthService:
         async with get_connection() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked_at, rt.remember_me,
+                SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked_at,
+                       rt.remember_me,
                        u.email, u.full_name, u.is_active
                 FROM refresh_tokens rt
                 JOIN users u ON u.id = rt.user_id
@@ -413,7 +476,8 @@ class AuthService:
             if row["revoked_at"] is not None:
                 # Possible token reuse — revoke all tokens for this user.
                 await conn.execute(
-                    "UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+                    "UPDATE refresh_tokens SET revoked_at = NOW()"
+                    " WHERE user_id = $1 AND revoked_at IS NULL",
                     row["user_id"],
                 )
                 _clear_refresh_cookie(response)
@@ -465,12 +529,17 @@ class AuthService:
             new_raw_refresh = _generate_refresh_token()
             new_token_hash = _hash_token(new_raw_refresh)
             remember_me: bool = row["remember_me"]
-            expire_days = REFRESH_TOKEN_REMEMBER_DAYS if remember_me else REFRESH_TOKEN_EXPIRE_DAYS
+            expire_days = (
+                REFRESH_TOKEN_REMEMBER_DAYS
+                if remember_me
+                else REFRESH_TOKEN_EXPIRE_DAYS
+            )
             new_expires_at = datetime.now(timezone.utc) + timedelta(days=expire_days)
 
             await conn.execute(
                 """
-                INSERT INTO refresh_tokens (user_id, token_hash, expires_at, remember_me)
+                INSERT INTO refresh_tokens
+                (user_id, token_hash, expires_at, remember_me)
                 VALUES ($1, $2, $3, $4)
                 """,
                 row["user_id"],

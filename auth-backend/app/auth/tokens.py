@@ -75,7 +75,7 @@ def create_access_token(user_id: int) -> tuple[str, datetime]:
     return token, expires_at
 
 
-def decode_access_token(token: str) -> Optional[int]:
+def decode_access_token(token: str) -> int | None:
     """Decode and verify *token*; return user_id or None on any failure."""
     try:
         payload = jwt.decode(

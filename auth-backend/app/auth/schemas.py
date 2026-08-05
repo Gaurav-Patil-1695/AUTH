@@ -1,33 +1,41 @@
-from typing import Any, Dict, Optional
+from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
-    fullName: str = Field(..., min_length=1)
+    full_name: str = Field(..., min_length=1, alias="fullName")
     email: EmailStr
     password: str = Field(..., min_length=8)
-    confirmPassword: str
-    acceptTerms: bool
+    confirm_password: str = Field(..., alias="confirmPassword")
+    accept_terms: bool = Field(..., alias="acceptTerms")
+
+    model_config = {"populate_by_name": True}
 
 
 class RegisterResponse(BaseModel):
     id: int
-    fullName: str
+    full_name: str = Field(..., alias="fullName")
     email: str
-    createdAt: str
+    created_at: str = Field(..., alias="createdAt")
+
+    model_config = {"populate_by_name": True}
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    rememberMe: Optional[bool] = False
+    remember_me: bool | None = Field(False, alias="rememberMe")
+
+    model_config = {"populate_by_name": True}
 
 
 class LoginResponse(BaseModel):
-    accessToken: str
-    tokenType: str
-    user: Dict[str, Any]
+    access_token: str = Field(..., alias="accessToken")
+    token_type: str = Field(..., alias="tokenType")
+    user: dict[str, Any]
+
+    model_config = {"populate_by_name": True}
 
 
 class ForgotPasswordRequest(BaseModel):
@@ -41,7 +49,9 @@ class ForgotPasswordResponse(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     password: str = Field(..., min_length=8)
-    confirmPassword: str
+    confirm_password: str = Field(..., alias="confirmPassword")
+
+    model_config = {"populate_by_name": True}
 
 
 class ResetPasswordResponse(BaseModel):
@@ -50,9 +60,11 @@ class ResetPasswordResponse(BaseModel):
 
 class MeResponse(BaseModel):
     id: int
-    fullName: str
+    full_name: str = Field(..., alias="fullName")
     email: str
-    createdAt: str
+    created_at: str = Field(..., alias="createdAt")
+
+    model_config = {"populate_by_name": True}
 
 
 class LogoutRequest(BaseModel):
@@ -64,6 +76,8 @@ class LogoutResponse(BaseModel):
 
 
 class RefreshResponse(BaseModel):
-    accessToken: str
-    tokenType: str
-    user: Dict[str, Any]
+    access_token: str = Field(..., alias="accessToken")
+    token_type: str = Field(..., alias="tokenType")
+    user: dict[str, Any]
+
+    model_config = {"populate_by_name": True}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -13,19 +12,19 @@ from app.models.password_reset import PasswordReset
 # Internal row-to-dict helpers
 # ---------------------------------------------------------------------------
 
-def _row_to_user(row) -> Optional[dict]:
+def _row_to_user(row) -> dict | None:
     if row is None:
         return None
     return dict(row._mapping)
 
 
-def _row_to_password_reset(row) -> Optional[dict]:
+def _row_to_password_reset(row) -> dict | None:
     if row is None:
         return None
     return dict(row._mapping)
 
 
-def _row_to_refresh_token(row) -> Optional[dict]:
+def _row_to_refresh_token(row) -> dict | None:
     if row is None:
         return None
     return dict(row._mapping)
@@ -37,7 +36,7 @@ def _row_to_refresh_token(row) -> Optional[dict]:
 
 async def get_user_by_id(
     conn: AsyncConnection, user_id: int
-) -> Optional[dict]:
+) -> dict | None:
     result = await conn.execute(
         text(
             "SELECT id, full_name, email, password_hash, is_active, "
@@ -51,7 +50,7 @@ async def get_user_by_id(
 
 async def get_user_by_email(
     conn: AsyncConnection, email: str
-) -> Optional[dict]:
+) -> dict | None:
     result = await conn.execute(
         text(
             "SELECT id, full_name, email, password_hash, is_active, "
@@ -129,7 +128,7 @@ async def create_password_reset(
 
 async def get_password_reset_by_token_hash(
     conn: AsyncConnection, token_hash: str
-) -> Optional[dict]:
+) -> dict | None:
     result = await conn.execute(
         text(
             "SELECT id, user_id, token_hash, expires_at, used_at, created_at "
@@ -201,7 +200,7 @@ async def create_refresh_token(
 
 async def get_refresh_token_by_token_hash(
     conn: AsyncConnection, token_hash: str
-) -> Optional[dict]:
+) -> dict | None:
     result = await conn.execute(
         text(
             "SELECT id, user_id, token_hash, expires_at, "
@@ -250,7 +249,8 @@ async def rotate_refresh_token(
     expires_at: datetime,
     remember_me: bool,
 ) -> dict:
-    """Revoke the old token and issue a new one atomically (within the same connection)."""
+    """Revoke the old token and issue a new one atomically (within the same
+    connection)."""
     await revoke_refresh_token(conn, old_token_id)
     return await create_refresh_token(
         conn,

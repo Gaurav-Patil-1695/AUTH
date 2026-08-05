@@ -11,7 +11,6 @@ from app.auth.schemas import (
     ResetPasswordRequest,
     ResetPasswordResponse,
     MeResponse,
-    LogoutRequest,
     LogoutResponse,
     RefreshResponse,
 )
@@ -26,7 +25,7 @@ def get_auth_service() -> AuthService:
     return AuthService()
 
 
-@router.post("/register", response_model=RegisterResponse, status_code=201)
+@router.post("/register", status_code=201)
 async def register(
     body: RegisterRequest,
     service: AuthService = Depends(get_auth_service),
@@ -34,7 +33,7 @@ async def register(
     return await service.register(body)
 
 
-@router.post("/login", response_model=LoginResponse, status_code=200)
+@router.post("/login", status_code=200)
 async def login(
     body: LoginRequest,
     response: Response,
@@ -43,23 +42,23 @@ async def login(
     return await service.login(body, response)
 
 
-@router.post("/forgot-password", response_model=ForgotPasswordResponse, status_code=202)
-async def forgotPassword(
+@router.post("/forgot-password", status_code=202)
+async def forgot_password(
     body: ForgotPasswordRequest,
     service: AuthService = Depends(get_auth_service),
 ) -> ForgotPasswordResponse:
     return await service.forgotPassword(body)
 
 
-@router.post("/reset-password", response_model=ResetPasswordResponse, status_code=200)
-async def resetPassword(
+@router.post("/reset-password", status_code=200)
+async def reset_password(
     body: ResetPasswordRequest,
     service: AuthService = Depends(get_auth_service),
 ) -> ResetPasswordResponse:
     return await service.resetPassword(body)
 
 
-@router.get("/me", response_model=MeResponse, status_code=200)
+@router.get("/me", status_code=200)
 async def me(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
     service: AuthService = Depends(get_auth_service),
@@ -67,7 +66,7 @@ async def me(
     return await service.me(credentials)
 
 
-@router.post("/logout", response_model=LogoutResponse, status_code=200)
+@router.post("/logout", status_code=200)
 async def logout(
     request: Request,
     response: Response,
@@ -77,7 +76,7 @@ async def logout(
     return await service.logout(request, response, credentials)
 
 
-@router.post("/refresh", response_model=RefreshResponse, status_code=200)
+@router.post("/refresh", status_code=200)
 async def refresh(
     request: Request,
     response: Response,

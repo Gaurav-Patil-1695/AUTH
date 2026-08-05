@@ -37,7 +37,10 @@ def get_current_user(
 
     try:
         payload = decode_access_token(credentials.credentials)
-    except JWTError:
+    except (JWTError, Exception):
+        raise _unauthorized
+
+    if payload is None:
         raise _unauthorized
 
     user_id_raw = payload.get("sub")
@@ -49,7 +52,11 @@ def get_current_user(
     except (ValueError, TypeError):
         raise _unauthorized
 
-    user: User | None = db.query(User).filter(User.id == user_id).first()
+    try:
+        user: User | None = db.query(User).filter(User.id == user_id).first()
+    except Exception:
+        raise _unauthorized
+
     if user is None:
         raise _unauthorized
 

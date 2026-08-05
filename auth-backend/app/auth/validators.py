@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -17,6 +16,12 @@ PASSWORD_REQUIRE_SPECIAL: bool = False  # require_special_character=false
 _UPPERCASE_RE = re.compile(r"[A-Z]")
 _LOWERCASE_RE = re.compile(r"[a-z]")
 _NUMBER_RE = re.compile(r"[0-9]")
+# RFC-5322 simplified pattern — same rule used by the frontend
+_EMAIL_RE = re.compile(
+    r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+"
+    r"@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +58,7 @@ MSG_TERMS_REQUIRED: str = "You must accept the terms and conditions."
 # (Each function returns None on success or the exact error message string.)
 # ---------------------------------------------------------------------------
 
-def validate_full_name(full_name: Optional[str]) -> Optional[str]:
+def validate_full_name(full_name: str | None) -> str | None:
     """Validate the full_name field; return error message or None."""
     if not full_name or not full_name.strip():
         return MSG_FULL_NAME_REQUIRED
@@ -62,24 +67,18 @@ def validate_full_name(full_name: Optional[str]) -> Optional[str]:
     return None
 
 
-def validate_email(email: Optional[str]) -> Optional[str]:
+def validate_email(email: str | None) -> str | None:
     """Validate the email field; return error message or None."""
     if not email or not email.strip():
         return MSG_EMAIL_REQUIRED
     if len(email) > 254:
         return MSG_EMAIL_MAX_LENGTH
-    # RFC-5322 simplified pattern — same rule used by the frontend
-    pattern = re.compile(
-        r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+"
-        r"@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
-        r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
-    )
-    if not pattern.match(email):
+    if not _EMAIL_RE.match(email):
         return MSG_EMAIL_INVALID
     return None
 
 
-def validate_password(password: Optional[str]) -> list[str]:
+def validate_password(password: str | None) -> list[str]:
     """Validate a new password against the policy.
 
     Returns a list of error messages in the order specified by
@@ -107,8 +106,8 @@ def validate_password(password: Optional[str]) -> list[str]:
 
 
 def validate_confirm_password(
-    confirm_password: Optional[str], password: Optional[str]
-) -> Optional[str]:
+    confirm_password: str | None, password: str | None
+) -> str | None:
     """Validate the confirm_password field; return error message or None."""
     if not confirm_password:
         return MSG_CONFIRM_PASSWORD_REQUIRED
@@ -117,14 +116,14 @@ def validate_confirm_password(
     return None
 
 
-def validate_reset_token(token: Optional[str]) -> Optional[str]:
+def validate_reset_token(token: str | None) -> str | None:
     """Validate the presence of a reset token; return error message or None."""
     if not token or not token.strip():
         return MSG_TOKEN_REQUIRED
     return None
 
 
-def validate_terms_accepted(accepted: Optional[bool]) -> Optional[str]:
+def validate_terms_accepted(accepted: bool | None) -> str | None:
     """Validate that the terms-and-conditions checkbox was ticked."""
     if not accepted:
         return MSG_TERMS_REQUIRED
@@ -137,11 +136,11 @@ def validate_terms_accepted(accepted: Optional[bool]) -> Optional[str]:
 
 def collect_registration_errors(
     *,
-    full_name: Optional[str],
-    email: Optional[str],
-    password: Optional[str],
-    confirm_password: Optional[str],
-    terms_accepted: Optional[bool],
+    full_name: str | None,
+    email: str | None,
+    password: str | None,
+    confirm_password: str | None,
+    terms_accepted: bool | None,
 ) -> dict[str, list[str]]:
     """Run all registration field validators and return a dict of field -> [messages].
 
@@ -175,11 +174,12 @@ def collect_registration_errors(
 
 def collect_reset_password_errors(
     *,
-    token: Optional[str],
-    password: Optional[str],
-    confirm_password: Optional[str],
+    token: str | None,
+    password: str | None,
+    confirm_password: str | None,
 ) -> dict[str, list[str]]:
-    """Run all reset-password field validators and return a dict of field -> [messages]."""
+    """Run all reset-password field validators and return a dict of
+    field -> [messages]."""
     errors: dict[str, list[str]] = {}
 
     token_error = validate_reset_token(token)
